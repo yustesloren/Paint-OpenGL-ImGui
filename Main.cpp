@@ -94,48 +94,64 @@ Cell mouseToGrid(double xpos, double ypos)
     return { gridX, gridY };
 }
 
-
-// ALGORITMO DE LÍNEA SIMPLE (INCREMENTAL BÁSICO)
-
-
-std::vector<Cell> simpleLine(
-    int x0,
-    int y0,
-    int x1,
-    int y1)
+// ============================================================================
+// ALGORITMO DE BRESENHAM PARA LÍNEA (diapositiva 13 del curso)
+// Decide qué celdas pintar usando SOLO aritmética entera, con un parámetro de
+// decisión P. Generalizado a los 8 octantes con:
+//   - sx, sy: dirección del avance (+1 o -1)
+//   - intercambio de ejes cuando la línea es empinada (|m| > 1)
+// ============================================================================
+std::vector<Cell> bresenhamLine(int x0, int y0, int x1, int y1)
 {
     std::vector<Cell> puntos;
 
-    int dx = x1 - x0;
-    int dy = y1 - y0;
+    // Δx y Δy en valor absoluto: las reglas de la diapositiva usan distancias positivas
+    int dx = std::abs(x1 - x0);
+    int dy = std::abs(y1 - y0);
 
-    // Calcula cuántos pasos dar tomando la distancia mayor (en X o en Y)
-    int steps = std::max(std::abs(dx), std::abs(dy));
+    // Dirección del avance en cada eje: +1 (derecha/arriba) o -1 (izquierda/abajo)
+    int sx = (x1 >= x0) ? 1 : -1;
+    int sy = (y1 >= y0) ? 1 : -1;
 
-    if (steps == 0)
+    // Si la línea es empinada (|m| > 1), se intercambian los papeles de los ejes:
+    // 'dx' pasa a ser la distancia del eje que avanza siempre (el eje dominante).
+    bool empinada = dy > dx;
+    if (empinada)
+        std::swap(dx, dy);
+
+    // Parámetro de decisión inicial: P0 = 2Δy - Δx
+    int P = 2 * dy - dx;
+
+    int x = x0;
+    int y = y0;
+
+    // Se pintan Δx + 1 celdas (incluye el punto inicial y el final)
+    for (int i = 0; i <= dx; i++)
     {
-        puntos.push_back({ x0, y0 });
-        return puntos;
-    }
+        puntos.push_back({ x, y });   // pintar la celda actual
 
-    // Calcula los incrementos proporcionales para avanzar de forma fluida
-    float xInc = dx / (float)steps;
-    float yInc = dy / (float)steps;
+        if (P >= 0)
+        {
+            // P >= 0: la recta está más cerca de la celda "de arriba"
+            // -> también se avanza en el eje secundario
+            if (empinada) x += sx;
+            else          y += sy;
+            P = P + 2 * dy - 2 * dx;  // P(k+1) = P(k) + 2Δy - 2Δx
+        }
+        else
+        {
+            // P < 0: la recta está más cerca de la celda "de abajo"
+            // -> solo se avanza en el eje dominante
+            P = P + 2 * dy;           // P(k+1) = P(k) + 2Δy
+        }
 
-    float x = (float)x0;   // conversión EXPLÍCITA de int a float
-    float y = (float)y0;
-
-    // Ciclo para recorrer cada paso y redondear al entero más cercano
-    for (int i = 0; i <= steps; i++)
-    {
-        puntos.push_back({ (int)(x + 0.5f), (int)(y + 0.5f) });
-        x += xInc;
-        y += yInc;
+        // Siempre se avanza una celda en el eje dominante (x + 1 en la diapositiva)
+        if (empinada) y += sy;
+        else          x += sx;
     }
 
     return puntos;
 }
-
 
 // EL CÍRCULO DE PUNTO MEDIO (OCTANTES Y PARÁMETRO DE DECISIÓN)
 
@@ -200,8 +216,8 @@ std::vector<Cell> rasterizarFigura(const Figura& figura)
     {
         Cell inicio = figura.puntos[0];
         Cell fin    = figura.puntos[1];
-        // (Fase 4: aquí reemplazaremos simpleLine por Bresenham)
-        return simpleLine(inicio.x, inicio.y, fin.x, fin.y);
+        // Algoritmo de Bresenham (diapositiva 13): solo aritmética entera
+        return bresenhamLine(inicio.x, inicio.y, fin.x, fin.y);
     }
 
     if (figura.tipo == CIRCULO)
