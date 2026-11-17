@@ -33,8 +33,8 @@ struct Cell
 };
 
 // Tipos de figura que sabe dibujar el programa.
-// (En las siguientes fases se agregará LIBRE para el dibujo a mano alzada.)
-enum TipoFigura { LINEA, CIRCULO, TRIANGULO, CUADRADO };
+
+enum TipoFigura { LINEA, CIRCULO, TRIANGULO, CUADRADO, LIBRE };
 
 // Una figura se guarda por sus PUNTOS DE CONTROL (los clics que la definen),
 // NO por sus celdas pintadas. Las celdas se calculan cada frame con el algoritmo.
@@ -43,6 +43,7 @@ enum TipoFigura { LINEA, CIRCULO, TRIANGULO, CUADRADO };
 //   TRIANGULO -> puntos[0..2] = los 3 vértices (A, B, C)
 //   CUADRADO  -> puntos[0..3] = las 4 esquinas (A, B, C, D)
 //                = triángulo (A, B, C) + triángulo (A, C, D)
+//   LIBRE     -> puntos[0..n] = las celdas por donde pasó el mouse (trazo a mano alzada)
 struct Figura
 {
     TipoFigura tipo = LINEA;                  // valor inicial por defecto (evita "basura")
@@ -67,6 +68,11 @@ TipoFigura herramientaActual = LINEA;
 // Clics que el usuario ya hizo para la figura que está construyendo.
 // Cuando hay tantos como necesita la herramienta, se crea la figura y se vacía.
 std::vector<Cell> clicsPendientes;
+
+
+// true mientras el usuario mantiene presionado el clic con la herramienta LIBRE.
+// Entre PRESIONAR y SOLTAR, cada movimiento del mouse agrega puntos al trazo.
+bool trazandoLibre = false;
 
 // CALLBACK DE REDIMENSIONAMIENTO DE VENTANA
 
@@ -233,6 +239,35 @@ std::vector<Cell> rasterizarPoligono(const std::vector<Cell>& vertices)
 }
 
 // ============================================================================
+// RASTERIZAR UN TRAZO LIBRE (polilínea ABIERTA): une cada punto con el
+// siguiente usando Bresenham. A diferencia del polígono, el último punto
+// NO se une con el primero. Así el trazo queda continuo aunque el mouse
+// se haya movido rápido y se haya "saltado" celdas.
+// ============================================================================
+std::vector<Cell> rasterizarTrazo(const std::vector<Cell>& puntos)
+{
+    std::vector<Cell> celdas;
+
+    // Un trazo de un solo punto (el usuario hizo clic sin mover): una celda
+    if (puntos.size() == 1)
+    {
+        celdas.push_back(puntos[0]);
+        return celdas;
+    }
+
+    // Une el punto i con el i+1. El ciclo termina en el PENÚLTIMO punto
+    // (i + 1 < tamaño), así nunca se busca un punto que no existe y
+    // el trazo queda abierto.
+    for (size_t i = 0; i + 1 < puntos.size(); i++)
+    {
+        std::vector<Cell> tramo = bresenhamLine(puntos[i].x, puntos[i].y,
+            puntos[i + 1].x, puntos[i + 1].y);
+        celdas.insert(celdas.end(), tramo.begin(), tramo.end());
+    }
+    return celdas;
+}
+
+// ============================================================================
 // ESQUINAS DE UN CUADRADO a partir de 2 clics (esquinas opuestas).
 // El lado es el MAYOR entre |dx| y |dy| para que sea cuadrado (no rectángulo).
 // Orden A, B, C, D: así el cuadrado = triángulo (A,B,C) + triángulo (A,C,D).
@@ -288,6 +323,12 @@ std::vector<Cell> rasterizarFigura(const Figura& figura)
     {
         // Triángulo (3 vértices) y cuadrado (4 vértices): contorno con Bresenham
         return rasterizarPoligono(figura.puntos);
+    }
+
+    if (figura.tipo == LIBRE)
+    {
+        // Trazo a mano alzada: polilínea abierta unida con Bresenham
+        return rasterizarTrazo(figura.puntos);
     }
 
     return {};   // tipo desconocido: ninguna celda
@@ -486,19 +527,38 @@ void mouse_button_callback(
     int action,
     int mods)
 {
+    // SOLTAR el clic izquierdo: si había un trazo libre en curso, termina.
+    // Va ANTES del filtro de ImGui: si el usuario suelta el botón encima
+    // del panel, el trazo igual debe terminar.
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE)
+    {
+        trazandoLibre = false;
+        return;
+    }
+
     // Si el clic es sobre la interfaz de ImGui, no se dibuja en la grilla
     if (ImGui::GetIO().WantCaptureMouse) return;
 
-    // Solo interesa el momento en que se PRESIONA un botón (no cuando se suelta)
+    // De aquí en adelante solo interesa el momento de PRESIONAR
     if (action != GLFW_PRESS) return;
 
-    // CLIC IZQUIERDO: agregar un punto a la figura en construcción
+    // CLIC IZQUIERDO
     if (button == GLFW_MOUSE_BUTTON_LEFT)
     {
         double xpos, ypos;
         glfwGetCursorPos(window, &xpos, &ypos);
         Cell celda = mouseToGrid(xpos, ypos);   // píxel del mouse -> celda
 
+        // Herramienta LIBRE: empieza un trazo nuevo con el primer punto.
+        // Los siguientes puntos los agrega cursor_position_callback.
+        if (herramientaActual == LIBRE)
+        {
+            crearFigura(LIBRE, { celda });
+            trazandoLibre = true;
+            return;
+        }
+
+        // Herramientas de clics (línea, círculo, triángulo, cuadrado)
         clicsPendientes.push_back(celda);
 
         // ¿Ya están todos los clics que necesita la herramienta?
@@ -516,6 +576,30 @@ void mouse_button_callback(
     }
 }
 
+// ============================================================================
+// MOVIMIENTO DEL MOUSE: GLFW llama esta función cada vez que el cursor se mueve.
+// Solo hace algo mientras se está trazando con la herramienta LIBRE.
+// ============================================================================
+void cursor_position_callback(GLFWwindow* window, double xpos, double ypos)
+{
+    // Si no se está arrastrando con la herramienta LIBRE, no hay nada que hacer
+    if (!trazandoLibre) return;
+    if (figuras.empty()) return;   // seguridad: debe existir el trazo en curso
+
+    Cell celda = mouseToGrid(xpos, ypos);   // píxel del mouse -> celda
+
+    // El trazo en curso es la ÚLTIMA figura de la lista (la creó el clic).
+    // El '&' hace que 'trazo' sea la figura REAL, no una copia.
+    Figura& trazo = figuras.back();
+
+    // Si el mouse sigue en la misma celda del último punto, no se repite
+    Cell ultimo = trazo.puntos.back();
+    if (celda.x == ultimo.x && celda.y == ultimo.y) return;
+
+    // Nueva celda: se agrega al trazo. Al dibujar, rasterizarTrazo la unirá
+    // con la anterior usando Bresenham, así no quedan huecos.
+    trazo.puntos.push_back(celda);
+}
 
 // ============================================================================
 // PANEL DE HERRAMIENTAS (Dear ImGui)
@@ -538,6 +622,7 @@ void dibujarPanel()
     ImGui::RadioButton("Circulo (punto medio)", &h, CIRCULO);
     ImGui::RadioButton("Triangulo (3 clics)", &h, TRIANGULO);
     ImGui::RadioButton("Cuadrado (2 esquinas)", &h, CUADRADO);
+    ImGui::RadioButton("Libre (arrastrar)", &h, LIBRE);
     if (h != (int)herramientaActual)
     {
         herramientaActual = (TipoFigura)h;
@@ -562,8 +647,16 @@ void dibujarPanel()
     // ---------- Información ----------
     ImGui::SeparatorText("Informacion");
     ImGui::Text("Figuras dibujadas: %d", (int)figuras.size());
-    ImGui::Text("Clics: %d de %d", (int)clicsPendientes.size(), clicsNecesarios(herramientaActual));
-    ImGui::TextWrapped("Clic izquierdo: poner puntos. Clic derecho: cancelar.");
+    if (herramientaActual == LIBRE)
+    {
+        // La herramienta libre no cuenta clics: se dibuja arrastrando
+        ImGui::TextWrapped("Mantener clic izquierdo y arrastrar para dibujar.");
+    }
+    else
+    {
+        ImGui::Text("Clics: %d de %d", (int)clicsPendientes.size(), clicsNecesarios(herramientaActual));
+        ImGui::TextWrapped("Clic izquierdo: poner puntos. Clic derecho: cancelar.");
+    }
 
     ImGui::End();
 }
@@ -588,6 +681,7 @@ int main()
     // Registra las funciones de callback para eventos de ventana y mouse
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetCursorPosCallback(window, cursor_position_callback);   // movimiento del mouse (trazo libre)
 
     // Inicializa GLAD para cargar las funciones de OpenGL
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
