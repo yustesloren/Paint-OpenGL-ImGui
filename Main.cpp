@@ -33,20 +33,23 @@ struct Cell
 };
 
 // Tipos de figura que sabe dibujar el programa.
-// (En las siguientes fases agregaremos TRIANGULO, CUADRADO y LIBRE.)
-//enum: una lista de nombres para opciones fijas.
-enum TipoFigura { LINEA, CIRCULO };
+// (En las siguientes fases se agregará LIBRE para el dibujo a mano alzada.)
+enum TipoFigura { LINEA, CIRCULO, TRIANGULO, CUADRADO };
 
 // Una figura se guarda por sus PUNTOS DE CONTROL (los clics que la definen),
 // NO por sus celdas pintadas. Las celdas se calculan cada frame con el algoritmo.
-//   LINEA   -> puntos[0] = inicio,  puntos[1] = fin
-//   CIRCULO -> puntos[0] = centro,  puntos[1] = un punto del borde (define el radio)
+//   LINEA     -> puntos[0] = inicio,  puntos[1] = fin
+//   CIRCULO   -> puntos[0] = centro,  puntos[1] = un punto del borde (define el radio)
+//   TRIANGULO -> puntos[0..2] = los 3 vértices (A, B, C)
+//   CUADRADO  -> puntos[0..3] = las 4 esquinas (A, B, C, D)
+//                = triángulo (A, B, C) + triángulo (A, C, D)
 struct Figura
 {
     TipoFigura tipo = LINEA;                  // valor inicial por defecto (evita "basura")
-    std::vector<Cell> puntos;                 // un vector siempre empieza vacío, no necesita valor inicial
-    float color[3] = { 1.0f, 1.0f, 1.0f };    // r, g, b entre 0.0 y 1.0 (blanco por defecto)         // r, g, b entre 0.0 y 1.0
+    std::vector<Cell> puntos;                 // un vector siempre empieza vacío
+    float color[3] = { 1.0f, 1.0f, 1.0f };    // r, g, b entre 0.0 y 1.0 (blanco por defecto)
 };
+
 
 // Lista ÚNICA con todas las figuras, en el orden en que se dibujaron.
 // Si dos figuras se cruzan, la última dibujada queda encima (como en Paint).
@@ -206,6 +209,54 @@ std::vector<Cell> midpointCircle(
 }
 
 // ============================================================================
+// RASTERIZAR UN POLÍGONO: une cada vértice con el siguiente usando Bresenham,
+// y el último con el primero para cerrar la figura.
+// Sirve para el triángulo (3 vértices) y el cuadrado (4 vértices).
+// ============================================================================
+std::vector<Cell> rasterizarPoligono(const std::vector<Cell>& vertices)
+{
+    std::vector<Cell> celdas;
+    int n = (int)vertices.size();
+
+    for (int i = 0; i < n; i++)
+    {
+        Cell a = vertices[i];
+        Cell b = vertices[(i + 1) % n];   // % n: después del último vuelve al primero
+
+        // Cada lado del polígono es una línea de Bresenham
+        std::vector<Cell> lado = bresenhamLine(a.x, a.y, b.x, b.y);
+
+        // Agrega todas las celdas de este lado al final de la lista
+        celdas.insert(celdas.end(), lado.begin(), lado.end());
+    }
+    return celdas;
+}
+
+// ============================================================================
+// ESQUINAS DE UN CUADRADO a partir de 2 clics (esquinas opuestas).
+// El lado es el MAYOR entre |dx| y |dy| para que sea cuadrado (no rectángulo).
+// Orden A, B, C, D: así el cuadrado = triángulo (A,B,C) + triángulo (A,C,D).
+// ============================================================================
+std::vector<Cell> esquinasCuadrado(Cell a, Cell b)
+{
+    int dx = b.x - a.x;
+    int dy = b.y - a.y;
+
+    int lado = std::max(std::abs(dx), std::abs(dy));   // lado del cuadrado
+
+    // Dirección en que crece el cuadrado (igual que sx, sy en Bresenham)
+    int sx = (dx >= 0) ? 1 : -1;
+    int sy = (dy >= 0) ? 1 : -1;
+
+    return {
+        { a.x,             a.y             },   // A: el primer clic
+        { a.x + sx * lado, a.y             },   // B: misma fila que A
+        { a.x + sx * lado, a.y + sy * lado },   // C: esquina opuesta a A
+        { a.x,             a.y + sy * lado }    // D: misma columna que A
+    };
+}
+
+// ============================================================================
 // RASTERIZAR UNA FIGURA: convierte sus puntos de control en la lista de celdas
 // que hay que pintar, usando el algoritmo que corresponde a su tipo.
 // ============================================================================
@@ -233,6 +284,12 @@ std::vector<Cell> rasterizarFigura(const Figura& figura)
         return midpointCircle(centro.x, centro.y, radio);
     }
 
+    if (figura.tipo == TRIANGULO || figura.tipo == CUADRADO)
+    {
+        // Triángulo (3 vértices) y cuadrado (4 vértices): contorno con Bresenham
+        return rasterizarPoligono(figura.puntos);
+    }
+
     return {};   // tipo desconocido: ninguna celda
 }
 
@@ -245,6 +302,13 @@ void crearFigura(TipoFigura tipo, const std::vector<Cell>& puntos)
     Figura nueva;
     nueva.tipo = tipo;
     nueva.puntos = puntos;
+
+    // El cuadrado se crea con 2 clics, pero se GUARDA con sus 4 esquinas
+    // (así las transformaciones de la fase 8 pueden rotar cada esquina)
+    if (tipo == CUADRADO)
+
+        nueva.puntos = esquinasCuadrado(puntos[0], puntos[1]);
+
     // Se COPIA el color actual: si luego el usuario cambia de color,
     // esta figura conserva el suyo.
     for (int i = 0; i < 3; i++)
@@ -254,18 +318,19 @@ void crearFigura(TipoFigura tipo, const std::vector<Cell>& puntos)
 }
 
 
-// ============================================================================
 // Cuántos clics necesita cada herramienta para crear su figura.
-// (Fase 5: aquí se agregan TRIANGULO -> 3 y CUADRADO -> 2)
-// ============================================================================
+// Cuando clicsPendientes llega a este número, se crea la figura.
+
 int clicsNecesarios(TipoFigura tipo)
 {
     switch (tipo)
     {
-    case LINEA:   return 2;   // inicio y fin
-    case CIRCULO: return 2;   // centro y un punto del borde
+    case LINEA:     return 2;   // inicio y fin
+    case CIRCULO:   return 2;   // centro y un punto del borde
+    case TRIANGULO: return 3;   // los 3 vértices
+    case CUADRADO:  return 2;   // dos esquinas opuestas (se convierten en 4 esquinas)
     }
-    return 2;
+    return 2;                   // por seguridad, si llegara un tipo desconocido
 }
 
 // SHADERS DE OPENGL (VERTEX Y FRAGMENT SHADER)
@@ -471,6 +536,8 @@ void dibujarPanel()
     int h = (int)herramientaActual;   // RadioButton trabaja con int
     ImGui::RadioButton("Linea (Bresenham)", &h, LINEA);
     ImGui::RadioButton("Circulo (punto medio)", &h, CIRCULO);
+    ImGui::RadioButton("Triangulo (3 clics)", &h, TRIANGULO);
+    ImGui::RadioButton("Cuadrado (2 esquinas)", &h, CUADRADO);
     if (h != (int)herramientaActual)
     {
         herramientaActual = (TipoFigura)h;
