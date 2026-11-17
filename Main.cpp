@@ -25,32 +25,36 @@ int windowHeight = WINDOW_HEIGHT;
 
 // ESTRUCTURAS DE DATOS
 
-
 // Representa una celda discreta (coordenadas enteras en la cuadrícula)
 struct Cell
 {
-     
     int x;
     int y;
 };
 
-// Define una línea mediante un punto de inicio y un punto de fin
-struct Line
+// Tipos de figura que sabe dibujar el programa.
+// (En las siguientes fases agregaremos TRIANGULO, CUADRADO y LIBRE.)
+//enum: una lista de nombres para opciones fijas.
+enum TipoFigura { LINEA, CIRCULO };
+
+// Una figura se guarda por sus PUNTOS DE CONTROL (los clics que la definen),
+// NO por sus celdas pintadas. Las celdas se calculan cada frame con el algoritmo.
+//   LINEA   -> puntos[0] = inicio,  puntos[1] = fin
+//   CIRCULO -> puntos[0] = centro,  puntos[1] = un punto del borde (define el radio)
+struct Figura
 {
-    Cell inicio;
-    Cell fin;
+    TipoFigura tipo = LINEA;                  // valor inicial por defecto (evita "basura")
+    std::vector<Cell> puntos;                 // un vector siempre empieza vacío, no necesita valor inicial
+    float color[3] = { 1.0f, 1.0f, 1.0f };    // r, g, b entre 0.0 y 1.0 (blanco por defecto)         // r, g, b entre 0.0 y 1.0
 };
 
-// Define un círculo mediante un centro y un radio entero
-struct Circle
-{
-    Cell centro;
-    int radio;
-};
+// Lista ÚNICA con todas las figuras, en el orden en que se dibujaron.
+// Si dos figuras se cruzan, la última dibujada queda encima (como en Paint).
+std::vector<Figura> figuras;
 
-// Listas globales para almacenar todas las figuras dibujadas
-std::vector<Line> lineas;
-std::vector<Circle> circulos;
+// Color con el que se crearán las figuras nuevas.
+// En la parte 3B lo cambiará el selector de color de ImGui.
+float colorActual[3] = { 1.0f, 0.20f, 0.10f };
 
 // VARIABLES DE ESTADO PARA EL MOUSE
 
@@ -118,8 +122,8 @@ std::vector<Cell> simpleLine(
     float xInc = dx / (float)steps;
     float yInc = dy / (float)steps;
 
-    float x = x0;
-    float y = y0;
+    float x = (float)x0;   // conversión EXPLÍCITA de int a float
+    float y = (float)y0;
 
     // Ciclo para recorrer cada paso y redondear al entero más cercano
     for (int i = 0; i <= steps; i++)
@@ -186,6 +190,52 @@ std::vector<Cell> midpointCircle(
     return puntos;
 }
 
+// ============================================================================
+// RASTERIZAR UNA FIGURA: convierte sus puntos de control en la lista de celdas
+// que hay que pintar, usando el algoritmo que corresponde a su tipo.
+// ============================================================================
+std::vector<Cell> rasterizarFigura(const Figura& figura)
+{
+    if (figura.tipo == LINEA)
+    {
+        Cell inicio = figura.puntos[0];
+        Cell fin    = figura.puntos[1];
+        // (Fase 4: aquí reemplazaremos simpleLine por Bresenham)
+        return simpleLine(inicio.x, inicio.y, fin.x, fin.y);
+    }
+
+    if (figura.tipo == CIRCULO)
+    {
+        Cell centro = figura.puntos[0];
+        Cell borde  = figura.puntos[1];
+
+        // Radio = distancia euclidiana entre el centro y el punto del borde
+        int dx = borde.x - centro.x;
+        int dy = borde.y - centro.y;
+        int radio = (int)std::sqrt((float)(dx * dx + dy * dy));
+        if (radio < 1) radio = 1;
+
+        return midpointCircle(centro.x, centro.y, radio);
+    }
+
+    return {};   // tipo desconocido: ninguna celda
+}
+
+// ============================================================================
+// CREAR UNA FIGURA nueva con el color que esté seleccionado en este momento.
+// ============================================================================
+void crearFigura(TipoFigura tipo, const std::vector<Cell>& puntos)
+{
+    Figura nueva;
+    nueva.tipo = tipo;
+    nueva.puntos = puntos;
+    // Se COPIA el color actual: si luego el usuario cambia de color,
+    // esta figura conserva el suyo.
+    for (int i = 0; i < 3; i++)
+        nueva.color[i] = colorActual[i];
+
+    figuras.push_back(nueva);
+}
 
 // SHADERS DE OPENGL (VERTEX Y FRAGMENT SHADER)
 
@@ -198,49 +248,20 @@ const char* vertexShaderSource =
 "    gl_Position = vec4(aPos, 1.0);\n"
 "}\n";
 
+// FRAGMENT SHADER DE LA GRILLA: ahora SOLO dibuja las rayas de la grilla.
+// Los píxeles que no son raya se DESCARTAN para que se vea lo que hay debajo
+// (el fondo o las celdas pintadas).
 const char* fragmentShaderSource =
 "#version 330 core\n"
 "out vec4 FragColor;\n"
 "uniform float uCellSize;\n"
-"uniform int uLineCount;\n"
-"uniform ivec2 uLinePoints[200];\n"
-"uniform int uCircleCount;\n"
-"uniform ivec2 uCirclePoints[400];\n"
 "void main()\n"
 "{\n"
-"    vec2 pixel = gl_FragCoord.xy;\n"
-"    ivec2 currentCell = ivec2(floor(pixel / uCellSize));\n"
-"    vec2 insideCell = mod(pixel, uCellSize);\n"
-"    \n"
-"    // Color base de fondo oscuro\n"
-"    vec3 color = vec3(0.10, 0.10, 0.15);\n"
-"    \n"
-"    // Dibuja las líneas de división de la cuadrícula\n"
+"    vec2 insideCell = mod(gl_FragCoord.xy, uCellSize);\n"
 "    float gridWidth = 1.0;\n"
-"    if (insideCell.x < gridWidth || insideCell.y < gridWidth)\n"
-"    {\n"
-"        color = vec3(0.30, 0.30, 0.35);\n"
-"    }\n"
-"    \n"
-"    // Comprueba si la celda actual forma parte de alguna línea\n"
-"    bool isLine = false;\n"
-"    for (int i = 0; i < uLineCount; i++)\n"
-"    {\n"
-"        if (currentCell == uLinePoints[i]) { isLine = true; break; }\n"
-"    }\n"
-"    \n"
-"    // Comprueba si la celda actual forma parte de algún círculo\n"
-"    bool isCircle = false;\n"
-"    for (int i = 0; i < uCircleCount; i++)\n"
-"    {\n"
-"        if (currentCell == uCirclePoints[i]) { isCircle = true; break; }\n"
-"    }\n"
-"    \n"
-"    // Asigna colores: Rojo para líneas, Azul para círculos\n"
-"    if (isLine)   { color = vec3(1.0, 0.20, 0.10); }\n"
-"    if (isCircle) { color = vec3(0.10, 0.75, 1.0); }\n"
-"    \n"
-"    FragColor = vec4(color, 1.0);\n"
+"    if (insideCell.x >= gridWidth && insideCell.y >= gridWidth)\n"
+"        discard;\n"
+"    FragColor = vec4(0.30, 0.30, 0.35, 1.0);\n"
 "}\n";
 
 // SHADERS DE LAS CELDAS PINTADAS (cada celda = 2 triángulos dibujados con EBO)
@@ -388,8 +409,7 @@ void mouse_button_callback(
         }
         else
         {
-            Line nuevaLinea = { inicioLinea, celda };
-            lineas.push_back(nuevaLinea);
+            crearFigura(LINEA, { inicioLinea, celda });
             esperandoFinLinea = false;
         }
     }
@@ -404,15 +424,7 @@ void mouse_button_callback(
         }
         else
         {
-            // Calcula la distancia euclidiana entre el centro y el clic actual para definir el radio
-            int dx = celda.x - centroCirculo.x;
-            int dy = celda.y - centroCirculo.y;
-            int radio = (int)std::sqrt((float)(dx * dx + dy * dy));
-
-            if (radio < 1) radio = 1;
-
-            Circle nuevoCirculo = { centroCirculo, radio };
-            circulos.push_back(nuevoCirculo);
+            crearFigura(CIRCULO, { centroCirculo, celda });
             esperandoRadioCirculo = false;
         }
     }
@@ -525,87 +537,58 @@ int main()
   
     while (!glfwWindowShouldClose(window))
     {
-        glfwPollEvents(); // Procesa eventos del sistema operativo (clics, teclado)
+        glfwPollEvents();   // procesa clics y teclado (aquí se llama mouse_button_callback)
 
-        // [IMGUI] Nuevo frame de interfaz. Orden: renderer, plataforma, núcleo.
+        // [IMGUI] Nuevo frame de interfaz
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        ImGui::ShowDemoWindow();   // (parte 3B: se reemplaza por tu propio panel)
 
-        // [IMGUI] Declarar la interfaz de este frame (por ahora, la demo oficial)
-        
-        ImGui::ShowDemoWindow();
-
+        // ---------- CAPA 1: FONDO ----------
         glClearColor(0.10f, 0.10f, 0.15f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT); // Limpia la pantalla con el color de fondo
+        glClear(GL_COLOR_BUFFER_BIT);
 
+        // ---------- CAPA 2: CELDAS PINTADAS ----------
+        // Se reconstruye la geometría en cada frame a partir de la lista de figuras
+        std::vector<float> verticesCeldas;
+        std::vector<unsigned int> indicesCeldas;
+
+        for (const Figura& figura : figuras)                       // cada figura...
+        {
+            std::vector<Cell> celdas = rasterizarFigura(figura);   // ...se rasteriza con su algoritmo
+            for (const Cell& c : celdas)                           // cada celda resultante...
+            {
+                agregarCelda(verticesCeldas, indicesCeldas,        // ...se vuelve 2 triángulos
+                    c.x, c.y,
+                    figura.color[0], figura.color[1], figura.color[2]);
+            }
+        }
+
+        if (!indicesCeldas.empty())   // si no hay nada dibujado, no hay nada que subir
+        {
+            glBindVertexArray(cellVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, cellVBO);
+            glBufferData(GL_ARRAY_BUFFER,
+                verticesCeldas.size() * sizeof(float),
+                verticesCeldas.data(), GL_DYNAMIC_DRAW);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                indicesCeldas.size() * sizeof(unsigned int),
+                indicesCeldas.data(), GL_DYNAMIC_DRAW);
+
+            glUseProgram(cellProgram);
+            glUniform1f(cellSizeLocCeldas, CELL_SIZE);
+            glUniform2f(windowSizeLocCeldas, (float)windowWidth, (float)windowHeight);
+            glDrawElements(GL_TRIANGLES, (GLsizei)indicesCeldas.size(), GL_UNSIGNED_INT, 0);
+        }
+
+        // ---------- CAPA 3: GRILLA ENCIMA (solo las rayas) ----------
         glUseProgram(shaderProgram);
         glUniform1f(cellSizeLocation, CELL_SIZE);
-
-        // Procesa y recopila los puntos de todas las líneas creadas
-        std::vector<Cell> puntosLinea;
-        for (size_t i = 0; i < lineas.size(); i++)
-        {
-            std::vector<Cell> puntos = simpleLine(lineas[i].inicio.x, lineas[i].inicio.y, lineas[i].fin.x, lineas[i].fin.y);
-            for (size_t j = 0; j < puntos.size(); j++)
-            {
-                if (puntosLinea.size() < 200) puntosLinea.push_back(puntos[j]);
-            }
-        }
-        glUniform1i(lineCountLocation, (int)puntosLinea.size());
-        if (!puntosLinea.empty())
-        {
-            glUniform2iv(linePointsLocation, (int)puntosLinea.size(), (const GLint*)puntosLinea.data());
-        }
-
-        // Procesa y recopila los puntos de todos los círculos creados
-        std::vector<Cell> puntosCirculo;
-        for (size_t i = 0; i < circulos.size(); i++)
-        {
-            std::vector<Cell> puntos = midpointCircle(circulos[i].centro.x, circulos[i].centro.y, circulos[i].radio);
-            for (size_t j = 0; j < puntos.size(); j++)
-            {
-                if (puntosCirculo.size() < 400) puntosCirculo.push_back(puntos[j]);
-            }
-        }
-        glUniform1i(circleCountLocation, (int)puntosCirculo.size());
-        if (!puntosCirculo.empty())
-        {
-            glUniform2iv(circlePointsLocation, (int)puntosCirculo.size(), (const GLint*)puntosCirculo.data());
-        }
-
-        // Dibuja el cuadro completo en pantalla y actualiza los búferes
         glBindVertexArray(VAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
-        //  CELDAS PINTADITAS
-// 1) Armar la geometría de ESTE frame (por ahora: una celda fija de prueba)
-        std::vector<float> verticesCeldas;
-        std::vector<unsigned int> indicesCeldas;
-        agregarCelda(verticesCeldas, indicesCeldas, 3, 5, 1.0f, 0.0f, 0.0f);  // celda (3,5) roja
-
-        // 2) Subir los datos a la GPU
-        glBindVertexArray(cellVAO);                 // al enlazar el VAO, también queda activo su EBO
-        glBindBuffer(GL_ARRAY_BUFFER, cellVBO);
-        glBufferData(GL_ARRAY_BUFFER,
-            verticesCeldas.size() * sizeof(float),       // tamaño en BYTES
-            verticesCeldas.data(),                       // puntero a los datos
-            GL_DYNAMIC_DRAW);                            // "cambiarán seguido"
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-            indicesCeldas.size() * sizeof(unsigned int),
-            indicesCeldas.data(),
-            GL_DYNAMIC_DRAW);
-
-        // 3) Dibujar con el programa de celdas
-        glUseProgram(cellProgram);
-        glUniform1f(cellSizeLocCeldas, CELL_SIZE);
-        glUniform2f(windowSizeLocCeldas, (float)windowWidth, (float)windowHeight);
-        glDrawElements(GL_TRIANGLES,                    // dibujar triángulos
-            (GLsizei)indicesCeldas.size(),   // cuántos ÍNDICES (6 por celda)
-            GL_UNSIGNED_INT,                 // tipo de los índices
-            0);                              // empezar desde el inicio del EBO
-
-        // [IMGUI] Dibujar la interfaz ENCIMA de la grilla: lo último que se dibuja queda arriba
+        // ---------- CAPA 4: INTERFAZ ----------
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
