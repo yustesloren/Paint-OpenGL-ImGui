@@ -53,18 +53,17 @@ struct Figura
 std::vector<Figura> figuras;
 
 // Color con el que se crearán las figuras nuevas.
-// En la parte 3B lo cambiará el selector de color de ImGui.
+// Lo modifica el selector de color del panel (ImGui::ColorEdit3 en dibujarPanel).
 float colorActual[3] = { 1.0f, 0.20f, 0.10f };
 
-// VARIABLES DE ESTADO PARA EL MOUSE
+// VARIABLES DE ESTADO DE LA INTERFAZ Y DEL MOUSE
 
+// Herramienta seleccionada en el panel de ImGui (el clic izquierdo dibuja con ella)
+TipoFigura herramientaActual = LINEA;
 
-bool esperandoFinLinea = false;  // Controla el primer y segundo clic para las líneas
-Cell inicioLinea;
-
-bool esperandoRadioCirculo = false; // Controla el centro y el radio para los círculos
-Cell centroCirculo;
-
+// Clics que el usuario ya hizo para la figura que está construyendo.
+// Cuando hay tantos como necesita la herramienta, se crea la figura y se vacía.
+std::vector<Cell> clicsPendientes;
 
 // CALLBACK DE REDIMENSIONAMIENTO DE VENTANA
 
@@ -237,6 +236,7 @@ std::vector<Cell> rasterizarFigura(const Figura& figura)
     return {};   // tipo desconocido: ninguna celda
 }
 
+
 // ============================================================================
 // CREAR UNA FIGURA nueva con el color que esté seleccionado en este momento.
 // ============================================================================
@@ -251,6 +251,21 @@ void crearFigura(TipoFigura tipo, const std::vector<Cell>& puntos)
         nueva.color[i] = colorActual[i];
 
     figuras.push_back(nueva);
+}
+
+
+// ============================================================================
+// Cuántos clics necesita cada herramienta para crear su figura.
+// (Fase 5: aquí se agregan TRIANGULO -> 3 y CUADRADO -> 2)
+// ============================================================================
+int clicsNecesarios(TipoFigura tipo)
+{
+    switch (tipo)
+    {
+    case LINEA:   return 2;   // inicio y fin
+    case CIRCULO: return 2;   // centro y un punto del borde
+    }
+    return 2;
 }
 
 // SHADERS DE OPENGL (VERTEX Y FRAGMENT SHADER)
@@ -406,46 +421,85 @@ void mouse_button_callback(
     int action,
     int mods)
 {
-    // Si el cursor está sobre una ventana de ImGui, el clic es de la interfaz:
-    // salimos antes de convertirlo en celda para no pintar debajo del botón.
+    // Si el clic es sobre la interfaz de ImGui, no se dibuja en la grilla
     if (ImGui::GetIO().WantCaptureMouse) return;
 
-    double xpos, ypos;
-    glfwGetCursorPos(window, &xpos, &ypos);
+    // Solo interesa el momento en que se PRESIONA un botón (no cuando se suelta)
+    if (action != GLFW_PRESS) return;
 
-    Cell celda = mouseToGrid(xpos, ypos); // Convierte posición de pantalla a celda
-
-    // Clic izquierdo: Dibuja Líneas (Primer clic = Inicio, Segundo clic = Fin)
-    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+    // CLIC IZQUIERDO: agregar un punto a la figura en construcción
+    if (button == GLFW_MOUSE_BUTTON_LEFT)
     {
-        if (!esperandoFinLinea)
+        double xpos, ypos;
+        glfwGetCursorPos(window, &xpos, &ypos);
+        Cell celda = mouseToGrid(xpos, ypos);   // píxel del mouse -> celda
+
+        clicsPendientes.push_back(celda);
+
+        // ¿Ya están todos los clics que necesita la herramienta?
+        if ((int)clicsPendientes.size() == clicsNecesarios(herramientaActual))
         {
-            inicioLinea = celda;
-            esperandoFinLinea = true;
-        }
-        else
-        {
-            crearFigura(LINEA, { inicioLinea, celda });
-            esperandoFinLinea = false;
+            crearFigura(herramientaActual, clicsPendientes);
+            clicsPendientes.clear();   // listo para la siguiente figura
         }
     }
 
-    // Clic derecho: Dibuja Círculos (Primer clic = Centro, Segundo clic = Calcula Radio)
-    if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS)
+    // CLIC DERECHO: cancelar la figura que se estaba construyendo
+    if (button == GLFW_MOUSE_BUTTON_RIGHT)
     {
-        if (!esperandoRadioCirculo)
-        {
-            centroCirculo = celda;
-            esperandoRadioCirculo = true;
-        }
-        else
-        {
-            crearFigura(CIRCULO, { centroCirculo, celda });
-            esperandoRadioCirculo = false;
-        }
+        clicsPendientes.clear();
     }
 }
 
+
+// ============================================================================
+// PANEL DE HERRAMIENTAS (Dear ImGui)
+// Se llama UNA VEZ POR FRAME, entre ImGui::NewFrame() e ImGui::Render().
+// Los widgets no guardan nada: lo que el usuario elige se guarda en
+// herramientaActual y colorActual (modo inmediato).
+// ============================================================================
+void dibujarPanel()
+{
+    // Posición y tamaño iniciales SOLO la primera vez (luego el usuario puede moverlo)
+    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(260, 0), ImGuiCond_FirstUseEver);
+
+    ImGui::Begin("Herramientas");
+
+    // ---------- Selección de herramienta ----------
+    ImGui::SeparatorText("Herramienta");
+    int h = (int)herramientaActual;   // RadioButton trabaja con int
+    ImGui::RadioButton("Linea (Bresenham)", &h, LINEA);
+    ImGui::RadioButton("Circulo (punto medio)", &h, CIRCULO);
+    if (h != (int)herramientaActual)
+    {
+        herramientaActual = (TipoFigura)h;
+        clicsPendientes.clear();   // al cambiar de herramienta se descartan los clics a medias
+    }
+
+    // ---------- Color ----------
+    ImGui::SeparatorText("Color");
+    ImGui::ColorEdit3("Color", colorActual);   // modifica colorActual directamente
+
+    // ---------- Lienzo ----------
+    ImGui::SeparatorText("Lienzo");
+    if (ImGui::Button("Deshacer") && !figuras.empty())
+        figuras.pop_back();          // quita la última figura
+    ImGui::SameLine();
+    if (ImGui::Button("Limpiar todo"))
+    {
+        figuras.clear();
+        clicsPendientes.clear();
+    }
+
+    // ---------- Información ----------
+    ImGui::SeparatorText("Informacion");
+    ImGui::Text("Figuras dibujadas: %d", (int)figuras.size());
+    ImGui::Text("Clics: %d de %d", (int)clicsPendientes.size(), clicsNecesarios(herramientaActual));
+    ImGui::TextWrapped("Clic izquierdo: poner puntos. Clic derecho: cancelar.");
+
+    ImGui::End();
+}
 
 // FUNCIÓN PRINCIPAL (MAIN)
 
@@ -559,7 +613,7 @@ int main()
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-        ImGui::ShowDemoWindow();   // (parte 3B: se reemplaza por tu propio panel)
+        dibujarPanel();   // tu panel de herramientas (en lugar de la demo)
 
         // ---------- CAPA 1: FONDO ----------
         glClearColor(0.10f, 0.10f, 0.15f, 1.0f);
@@ -579,6 +633,14 @@ int main()
                     c.x, c.y,
                     figura.color[0], figura.color[1], figura.color[2]);
             }
+        }
+
+
+        // Clics pendientes de la figura en construcción: se muestran en GRIS
+        // para que el usuario vea dónde ya hizo clic.
+        for (const Cell& c : clicsPendientes)
+        {
+            agregarCelda(verticesCeldas, indicesCeldas, c.x, c.y, 0.6f, 0.6f, 0.6f);
         }
 
         if (!indicesCeldas.empty())   // si no hay nada dibujado, no hay nada que subir
