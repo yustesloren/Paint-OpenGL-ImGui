@@ -1,0 +1,20 @@
+# Caché y configuración local de Visual Studio
+.vs/
+*.user
+
+# Resultados de compilación (se regeneran al compilar)
+x64/
+Debug/
+Release/
+/YoutubeOpenGL/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exe
+*.log
+*.tlog
+*.ipch
+
+# Posiciones de ventanas que guarda Dear ImGui
+imgui.ini
