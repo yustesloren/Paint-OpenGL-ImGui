@@ -10,6 +10,7 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <string>      
 
 
 // CONFIGURACIÓN DE LA VENTANA Y CUADRÍCULA
@@ -32,6 +33,103 @@ struct Cell
     int y;
 };
 
+// ============================================================================
+// MATRIZ 3x3 PARA TRANSFORMACIONES 2D (diapositiva "Matrices de transformación")
+// Se usan COORDENADAS HOMOGÉNEAS: el punto (x, y) se trata como (x, y, 1).
+// Así TODAS las transformaciones, incluida la traslación, son una matriz 3x3:
+//        punto nuevo = M · (x, y, 1)
+// m[fila][columna]
+// ============================================================================
+struct Matriz3
+{
+    float m[3][3];
+};
+
+// Identidad: "no transformar nada". M · p = p
+Matriz3 matrizIdentidad()
+{
+    return { { { 1.0f, 0.0f, 0.0f },
+               { 0.0f, 1.0f, 0.0f },
+               { 0.0f, 0.0f, 1.0f } } };
+}
+
+// COMPOSICIÓN: el producto A · B equivale a "aplicar primero B y luego A".
+// Cada casilla R[i][j] = fila i de A  por  columna j de B.
+Matriz3 multiplicar(const Matriz3& A, const Matriz3& B)
+{
+    Matriz3 R;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+        {
+            R.m[i][j] = 0.0f;
+            for (int k = 0; k < 3; k++)
+                R.m[i][j] += A.m[i][k] * B.m[k][j];
+        }
+    return R;
+}
+
+// Aplica la matriz al punto (x, y, 1). Solo se calculan x' e y':
+// la tercera fila siempre da 1 en transformaciones afines.
+void aplicarAPunto(const Matriz3& M, float x, float y, float& xNuevo, float& yNuevo)
+{
+    xNuevo = M.m[0][0] * x + M.m[0][1] * y + M.m[0][2] * 1.0f;
+    yNuevo = M.m[1][0] * x + M.m[1][1] * y + M.m[1][2] * 1.0f;
+}
+
+// ---------------- Las 5 transformaciones de la diapositiva ----------------
+
+// TRASLACIÓN: x' = x + tx,  y' = y + ty
+Matriz3 matrizTraslacion(float tx, float ty)
+{
+    return { { { 1.0f, 0.0f, tx   },
+               { 0.0f, 1.0f, ty   },
+               { 0.0f, 0.0f, 1.0f } } };
+}
+
+// ROTACIÓN (alrededor del origen, sentido antihorario):
+//   x' = x·cos θ − y·sin θ,   y' = x·sin θ + y·cos θ
+Matriz3 matrizRotacion(float grados)
+{
+    float rad = grados * 3.14159265f / 180.0f;   // las funciones cos/sin usan radianes
+    float c = std::cos(rad);
+    float s = std::sin(rad);
+    return { { { c,    -s,    0.0f },
+               { s,     c,    0.0f },
+               { 0.0f,  0.0f, 1.0f } } };
+}
+
+// ESCALAMIENTO: x' = sx·x,  y' = sy·y   (>1 agranda, <1 achica)
+Matriz3 matrizEscala(float sx, float sy)
+{
+    return { { { sx,   0.0f, 0.0f },
+               { 0.0f, sy,   0.0f },
+               { 0.0f, 0.0f, 1.0f } } };
+}
+
+// REFLEXIÓN respecto al eje X: voltea arriba/abajo  (x' = x,  y' = −y)
+Matriz3 matrizReflexionX()
+{
+    return { { {  1.0f,  0.0f, 0.0f },
+               {  0.0f, -1.0f, 0.0f },
+               {  0.0f,  0.0f, 1.0f } } };
+}
+
+// REFLEXIÓN respecto al eje Y: voltea izquierda/derecha  (x' = −x,  y' = y)
+Matriz3 matrizReflexionY()
+{
+    return { { { -1.0f,  0.0f, 0.0f },
+               {  0.0f,  1.0f, 0.0f },
+               {  0.0f,  0.0f, 1.0f } } };
+}
+
+// CIZALLAMIENTO: x' = x + shx·y,  y' = y + shy·x
+Matriz3 matrizCizalla(float shx, float shy)
+{
+    return { { { 1.0f, shx,  0.0f },
+               { shy,  1.0f, 0.0f },
+               { 0.0f, 0.0f, 1.0f } } };
+}
+
 // Tipos de figura que sabe dibujar el programa.
 
 enum TipoFigura { LINEA, CIRCULO, TRIANGULO, CUADRADO, LIBRE };
@@ -50,6 +148,7 @@ struct Figura
     std::vector<Cell> puntos;                 // un vector siempre empieza vacío
     float color[3] = { 1.0f, 1.0f, 1.0f };    // r, g, b entre 0.0 y 1.0 (blanco por defecto)
     bool relleno = false;                     // true: se pinta el interior (scanline), no solo el borde
+    Matriz3 transformacion = matrizIdentidad();   // transformaciones acumuladas (empieza "sin transformar")
 
 };
 
@@ -78,6 +177,10 @@ bool trazandoLibre = false;
 // Opción "Rellenar" del panel: las figuras NUEVAS se crearán rellenas si está activa.
 // (Igual que colorActual: se copia a cada figura al crearla.)
 bool rellenoActivo = false;
+
+// Índice de la figura que se va a transformar (en la lista 'figuras').
+// -1 significa "ninguna seleccionada". Se elige en la ventana "Transformaciones".
+int figuraSeleccionada = -1;
 
 // CALLBACK DE REDIMENSIONAMIENTO DE VENTANA
 
@@ -344,26 +447,49 @@ std::vector<Cell> esquinasCuadrado(Cell a, Cell b)
 }
 
 // ============================================================================
+// PUNTOS TRANSFORMADOS: aplica la matriz acumulada de la figura a cada uno de
+// sus puntos ORIGINALES y redondea a la celda más cercana.
+// Se redondea UNA sola vez, al dibujar, para que el error no se acumule.
+// ============================================================================
+std::vector<Cell> puntosTransformados(const Figura& figura)
+{
+    std::vector<Cell> resultado;
+    for (const Cell& c : figura.puntos)
+    {
+        float xNuevo, yNuevo;
+        // punto nuevo = M · (x, y, 1)
+        aplicarAPunto(figura.transformacion, (float)c.x, (float)c.y, xNuevo, yNuevo);
+
+        // La grilla solo tiene celdas enteras: se redondea al entero más cercano
+        resultado.push_back({ (int)std::round(xNuevo), (int)std::round(yNuevo) });
+    }
+    return resultado;
+}
+
+// ============================================================================
 // RASTERIZAR UNA FIGURA: convierte sus puntos de control en la lista de celdas
 // que hay que pintar, usando el algoritmo que corresponde a su tipo.
 // ============================================================================
 
 std::vector<Cell> rasterizarFigura(const Figura& figura)
 {
+    // Primero se aplican las transformaciones (matriz acumulada) a los puntos
+    // ORIGINALES. Desde aquí se trabaja con 'pts' en lugar de figura.puntos.
+    std::vector<Cell> pts = puntosTransformados(figura);
+
     if (figura.tipo == LINEA)
     {
-        Cell inicio = figura.puntos[0];
-        Cell fin = figura.puntos[1];
         // Algoritmo de Bresenham (diapositiva 13): solo aritmética entera
-        return bresenhamLine(inicio.x, inicio.y, fin.x, fin.y);
+        return bresenhamLine(pts[0].x, pts[0].y, pts[1].x, pts[1].y);
     }
 
     if (figura.tipo == CIRCULO)
     {
-        Cell centro = figura.puntos[0];
-        Cell borde = figura.puntos[1];
+        Cell centro = pts[0];
+        Cell borde = pts[1];
 
         // Radio = distancia euclidiana entre el centro y el punto del borde
+        // (ya transformados: si se escaló, el radio cambia)
         int dx = borde.x - centro.x;
         int dy = borde.y - centro.y;
         int radio = (int)std::sqrt((float)(dx * dx + dy * dy));
@@ -379,7 +505,7 @@ std::vector<Cell> rasterizarFigura(const Figura& figura)
 
     if (figura.tipo == TRIANGULO)
     {
-        std::vector<Cell> contorno = rasterizarPoligono(figura.puntos);
+        std::vector<Cell> contorno = rasterizarPoligono(pts);
 
         // Relleno scanline sobre el contorno de Bresenham
         if (figura.relleno)
@@ -393,23 +519,23 @@ std::vector<Cell> rasterizarFigura(const Figura& figura)
         {
             // CUADRADO CONSTRUIDO A PARTIR DE TRIÁNGULOS:
             // se rellena el triángulo (A, B, C) y el triángulo (A, C, D)
-            const std::vector<Cell>& p = figura.puntos;   // p[0]=A, p[1]=B, p[2]=C, p[3]=D
-            std::vector<Cell> triangulo1 = rellenarScanline(rasterizarPoligono({ p[0], p[1], p[2] }));
-            std::vector<Cell> triangulo2 = rellenarScanline(rasterizarPoligono({ p[0], p[2], p[3] }));
+            // pts[0]=A, pts[1]=B, pts[2]=C, pts[3]=D
+            std::vector<Cell> triangulo1 = rellenarScanline(rasterizarPoligono({ pts[0], pts[1], pts[2] }));
+            std::vector<Cell> triangulo2 = rellenarScanline(rasterizarPoligono({ pts[0], pts[2], pts[3] }));
 
             // Se unen las celdas de los dos triángulos en una sola lista
             triangulo1.insert(triangulo1.end(), triangulo2.begin(), triangulo2.end());
             return triangulo1;
         }
         // Sin relleno: solo los 4 lados
-        return rasterizarPoligono(figura.puntos);
+        return rasterizarPoligono(pts);
     }
 
     if (figura.tipo == LIBRE)
     {
         // Trazo a mano alzada: polilínea abierta unida con Bresenham.
         // No se rellena: puede tener cualquier forma (no necesariamente convexa).
-        return rasterizarTrazo(figura.puntos);
+        return rasterizarTrazo(pts);
     }
 
     return {};   // tipo desconocido: ninguna celda
@@ -455,6 +581,50 @@ int clicsNecesarios(TipoFigura tipo)
     case CUADRADO:  return 2;   // dos esquinas opuestas (se convierten en 4 esquinas)
     }
     return 2;                   // por seguridad, si llegara un tipo desconocido
+}
+
+// ============================================================================
+// APLICAR UNA TRANSFORMACIÓN a la figura número 'indice'.
+// La transformación X se hace ALREDEDOR DEL CENTRO de la figura (pivote):
+//     M_nueva = T(+c) · X · T(−c) · M_actual
+// Se lee de derecha a izquierda: lo que la figura ya tenía, llevar el centro
+// al origen, transformar, devolver el centro a su lugar.
+// ============================================================================
+void aplicarTransformacion(int indice, const Matriz3& X)
+{
+    // Seguridad: el índice debe corresponder a una figura que exista
+    if (indice < 0 || indice >= (int)figuras.size()) return;
+
+    Figura& f = figuras[indice];   // '&': se modifica la figura REAL, no una copia
+
+    // --- 1) Centro ACTUAL de la figura (con las transformaciones que ya tiene) ---
+    float cx = 0.0f, cy = 0.0f;
+    if (f.tipo == CIRCULO)
+    {
+        // El círculo gira y escala alrededor de SU centro (puntos[0])
+        aplicarAPunto(f.transformacion, (float)f.puntos[0].x, (float)f.puntos[0].y, cx, cy);
+    }
+    else
+    {
+        // Las demás figuras: centroide = promedio de sus puntos transformados
+        for (const Cell& c : f.puntos)
+        {
+            float xn, yn;
+            aplicarAPunto(f.transformacion, (float)c.x, (float)c.y, xn, yn);
+            cx += xn;
+            cy += yn;
+        }
+        cx /= (float)f.puntos.size();
+        cy /= (float)f.puntos.size();
+    }
+
+    // --- 2) Composición con pivote: T(+c) · X · T(−c) ---
+    Matriz3 alrededorDelCentro =
+        multiplicar(matrizTraslacion(cx, cy),
+            multiplicar(X, matrizTraslacion(-cx, -cy)));
+
+    // --- 3) Acumular: la nueva transformación se aplica DESPUÉS de las anteriores ---
+    f.transformacion = multiplicar(alrededorDelCentro, f.transformacion);
 }
 
 // SHADERS DE OPENGL (VERTEX Y FRAGMENT SHADER)
@@ -750,6 +920,120 @@ void dibujarPanel()
     ImGui::End();
 }
 
+// ============================================================================
+// Nombre legible de cada tipo de figura (para la lista de la ventana)
+// ============================================================================
+const char* nombreTipo(TipoFigura tipo)
+{
+    switch (tipo)
+    {
+    case LINEA:     return "Linea";
+    case CIRCULO:   return "Circulo";
+    case TRIANGULO: return "Triangulo";
+    case CUADRADO:  return "Cuadrado";
+    case LIBRE:     return "Libre";
+    }
+    return "?";
+}
+
+// ============================================================================
+// VENTANA DE TRANSFORMACIONES (Dear ImGui)
+// El usuario elige una figura de la lista y le aplica las 5 transformaciones
+// de la diapositiva. Cada botón llama a aplicarTransformacion() con su matriz.
+// ============================================================================
+void dibujarPanelTransformaciones()
+{
+    // Posición inicial a la derecha (solo la primera vez)
+    ImGui::SetNextWindowPos(ImVec2(490, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
+
+    ImGui::Begin("Transformaciones");
+
+    // Si se usó Deshacer o Limpiar, la figura seleccionada puede ya no existir:
+    // se ajusta para que el índice siempre sea válido (o -1 si no hay figuras).
+    if (figuraSeleccionada >= (int)figuras.size())
+        figuraSeleccionada = (int)figuras.size() - 1;
+
+    // ---------- Lista de figuras ----------
+    ImGui::SeparatorText("Figura seleccionada");
+    if (figuras.empty())
+    {
+        ImGui::TextWrapped("Dibuja una figura primero.");
+        ImGui::End();
+        return;
+    }
+
+    // "##lista": el texto después de ## es un identificador interno (no se muestra)
+    if (ImGui::BeginListBox("##lista", ImVec2(-1, 100)))
+    {
+        for (int i = 0; i < (int)figuras.size(); i++)
+        {
+            // Texto de cada fila, por ejemplo: "3: Triangulo"
+            std::string etiqueta = std::to_string(i + 1) + ": " + nombreTipo(figuras[i].tipo);
+
+            // Selectable: una fila que se resalta si está seleccionada
+            if (ImGui::Selectable(etiqueta.c_str(), figuraSeleccionada == i))
+                figuraSeleccionada = i;
+        }
+        ImGui::EndListBox();
+    }
+
+    if (figuraSeleccionada < 0)
+    {
+        ImGui::TextWrapped("Selecciona una figura de la lista.");
+        ImGui::End();
+        return;
+    }
+
+    // ---------- Traslación ----------
+    ImGui::SeparatorText("Traslacion");
+    static int tx = 2, ty = 0;              // 'static': conservan su valor entre frames
+    ImGui::InputInt("tx", &tx);
+    ImGui::InputInt("ty", &ty);
+    if (ImGui::Button("Trasladar"))
+        aplicarTransformacion(figuraSeleccionada, matrizTraslacion((float)tx, (float)ty));
+
+    // ---------- Rotación ----------
+    ImGui::SeparatorText("Rotacion");
+    static float angulo = 30.0f;
+    ImGui::SliderFloat("grados", &angulo, -180.0f, 180.0f, "%.0f");
+    if (ImGui::Button("Rotar"))
+        aplicarTransformacion(figuraSeleccionada, matrizRotacion(angulo));
+
+    // ---------- Escalamiento ----------
+    ImGui::SeparatorText("Escalamiento");
+    static float sx = 1.5f, sy = 1.5f;
+    ImGui::SliderFloat("sx", &sx, 0.1f, 3.0f, "%.2f");
+    ImGui::SliderFloat("sy", &sy, 0.1f, 3.0f, "%.2f");
+    if (ImGui::Button("Escalar"))
+        aplicarTransformacion(figuraSeleccionada, matrizEscala(sx, sy));
+
+    // ---------- Reflexión ----------
+    ImGui::SeparatorText("Reflexion");
+    if (ImGui::Button("Espejo eje X"))
+        aplicarTransformacion(figuraSeleccionada, matrizReflexionX());
+    ImGui::SameLine();
+    if (ImGui::Button("Espejo eje Y"))
+        aplicarTransformacion(figuraSeleccionada, matrizReflexionY());
+
+    // ---------- Cizallamiento ----------
+    ImGui::SeparatorText("Cizallamiento");
+    static float shx = 0.5f, shy = 0.0f;
+    ImGui::SliderFloat("shx", &shx, -2.0f, 2.0f, "%.2f");
+    ImGui::SliderFloat("shy", &shy, -2.0f, 2.0f, "%.2f");
+    if (ImGui::Button("Cizallar"))
+        aplicarTransformacion(figuraSeleccionada, matrizCizalla(shx, shy));
+
+    // ---------- Reiniciar ----------
+    ImGui::Separator();
+    // Vuelve a la identidad: la figura recupera su forma y posición ORIGINALES.
+    // Es posible porque nunca se modificaron los puntos originales.
+    if (ImGui::Button("Reiniciar figura"))
+        figuras[figuraSeleccionada].transformacion = matrizIdentidad();
+
+    ImGui::End();
+}
+
 // FUNCIÓN PRINCIPAL (MAIN)
 
 
@@ -864,6 +1148,7 @@ int main()
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         dibujarPanel();   // tu panel de herramientas (en lugar de la demo)
+        dibujarPanelTransformaciones();   // ventana de transformaciones (fase 8)
 
         // ---------- CAPA 1: FONDO ----------
         glClearColor(0.10f, 0.10f, 0.15f, 1.0f);
