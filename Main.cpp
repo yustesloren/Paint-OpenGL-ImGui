@@ -49,6 +49,8 @@ struct Figura
     TipoFigura tipo = LINEA;                  // valor inicial por defecto (evita "basura")
     std::vector<Cell> puntos;                 // un vector siempre empieza vacío
     float color[3] = { 1.0f, 1.0f, 1.0f };    // r, g, b entre 0.0 y 1.0 (blanco por defecto)
+    bool relleno = false;                     // true: se pinta el interior (scanline), no solo el borde
+
 };
 
 
@@ -73,6 +75,9 @@ std::vector<Cell> clicsPendientes;
 // true mientras el usuario mantiene presionado el clic con la herramienta LIBRE.
 // Entre PRESIONAR y SOLTAR, cada movimiento del mouse agrega puntos al trazo.
 bool trazandoLibre = false;
+// Opción "Rellenar" del panel: las figuras NUEVAS se crearán rellenas si está activa.
+// (Igual que colorActual: se copia a cada figura al crearla.)
+bool rellenoActivo = false;
 
 // CALLBACK DE REDIMENSIONAMIENTO DE VENTANA
 
@@ -268,6 +273,53 @@ std::vector<Cell> rasterizarTrazo(const std::vector<Cell>& puntos)
 }
 
 // ============================================================================
+// RELLENO POR LÍNEA DE EXPLORACIÓN (SCANLINE) - diapositiva 8 del curso.
+// Recibe el CONTORNO de una figura convexa (ya rasterizado con Bresenham o
+// punto medio) y la rellena FILA POR FILA:
+//   1) Para cada fila y: buscar el x mínimo y el x máximo del contorno.
+//   2) Pintar todas las celdas entre esos dos bordes.
+// Funciona para figuras CONVEXAS (triángulo, cuadrado, círculo).
+// ============================================================================
+std::vector<Cell> rellenarScanline(const std::vector<Cell>& contorno)
+{
+    std::vector<Cell> celdas;
+    if (contorno.empty()) return celdas;
+
+    // --- 1) Rango de filas que ocupa la figura: desde yMin hasta yMax ---
+    int yMin = contorno[0].y;
+    int yMax = contorno[0].y;
+    for (const Cell& c : contorno)
+    {
+        yMin = std::min(yMin, c.y);
+        yMax = std::max(yMax, c.y);
+    }
+    int filas = yMax - yMin + 1;
+
+    // --- 2) Para cada fila, el borde izquierdo (xMin) y el derecho (xMax) ---
+    // Se empieza con valores "imposibles" para que el primer x real los reemplace.
+    const int MUY_GRANDE = 1000000;
+    std::vector<int> xMin(filas, MUY_GRANDE);
+    std::vector<int> xMax(filas, -MUY_GRANDE);
+
+    for (const Cell& c : contorno)
+    {
+        int f = c.y - yMin;                  // número de fila (0 = la de más abajo)
+        xMin[f] = std::min(xMin[f], c.x);    // ¿esta celda está más a la izquierda?
+        xMax[f] = std::max(xMax[f], c.x);    // ¿esta celda está más a la derecha?
+    }
+
+    // --- 3) Pintar cada fila de borde a borde ---
+    for (int f = 0; f < filas; f++)
+    {
+        if (xMin[f] > xMax[f]) continue;     // fila sin celdas de contorno: se salta
+
+        for (int x = xMin[f]; x <= xMax[f]; x++)
+            celdas.push_back({ x, yMin + f });
+    }
+    return celdas;
+}
+
+// ============================================================================
 // ESQUINAS DE UN CUADRADO a partir de 2 clics (esquinas opuestas).
 // El lado es el MAYOR entre |dx| y |dy| para que sea cuadrado (no rectángulo).
 // Orden A, B, C, D: así el cuadrado = triángulo (A,B,C) + triángulo (A,C,D).
@@ -295,12 +347,13 @@ std::vector<Cell> esquinasCuadrado(Cell a, Cell b)
 // RASTERIZAR UNA FIGURA: convierte sus puntos de control en la lista de celdas
 // que hay que pintar, usando el algoritmo que corresponde a su tipo.
 // ============================================================================
+
 std::vector<Cell> rasterizarFigura(const Figura& figura)
 {
     if (figura.tipo == LINEA)
     {
         Cell inicio = figura.puntos[0];
-        Cell fin    = figura.puntos[1];
+        Cell fin = figura.puntos[1];
         // Algoritmo de Bresenham (diapositiva 13): solo aritmética entera
         return bresenhamLine(inicio.x, inicio.y, fin.x, fin.y);
     }
@@ -308,7 +361,7 @@ std::vector<Cell> rasterizarFigura(const Figura& figura)
     if (figura.tipo == CIRCULO)
     {
         Cell centro = figura.puntos[0];
-        Cell borde  = figura.puntos[1];
+        Cell borde = figura.puntos[1];
 
         // Radio = distancia euclidiana entre el centro y el punto del borde
         int dx = borde.x - centro.x;
@@ -316,24 +369,51 @@ std::vector<Cell> rasterizarFigura(const Figura& figura)
         int radio = (int)std::sqrt((float)(dx * dx + dy * dy));
         if (radio < 1) radio = 1;
 
-        return midpointCircle(centro.x, centro.y, radio);
+        std::vector<Cell> contorno = midpointCircle(centro.x, centro.y, radio);
+
+        // Relleno: cada fila de un punto simétrico del círculo al otro
+        if (figura.relleno)
+            return rellenarScanline(contorno);
+        return contorno;
     }
 
-    if (figura.tipo == TRIANGULO || figura.tipo == CUADRADO)
+    if (figura.tipo == TRIANGULO)
     {
-        // Triángulo (3 vértices) y cuadrado (4 vértices): contorno con Bresenham
+        std::vector<Cell> contorno = rasterizarPoligono(figura.puntos);
+
+        // Relleno scanline sobre el contorno de Bresenham
+        if (figura.relleno)
+            return rellenarScanline(contorno);
+        return contorno;
+    }
+
+    if (figura.tipo == CUADRADO)
+    {
+        if (figura.relleno)
+        {
+            // CUADRADO CONSTRUIDO A PARTIR DE TRIÁNGULOS:
+            // se rellena el triángulo (A, B, C) y el triángulo (A, C, D)
+            const std::vector<Cell>& p = figura.puntos;   // p[0]=A, p[1]=B, p[2]=C, p[3]=D
+            std::vector<Cell> triangulo1 = rellenarScanline(rasterizarPoligono({ p[0], p[1], p[2] }));
+            std::vector<Cell> triangulo2 = rellenarScanline(rasterizarPoligono({ p[0], p[2], p[3] }));
+
+            // Se unen las celdas de los dos triángulos en una sola lista
+            triangulo1.insert(triangulo1.end(), triangulo2.begin(), triangulo2.end());
+            return triangulo1;
+        }
+        // Sin relleno: solo los 4 lados
         return rasterizarPoligono(figura.puntos);
     }
 
     if (figura.tipo == LIBRE)
     {
-        // Trazo a mano alzada: polilínea abierta unida con Bresenham
+        // Trazo a mano alzada: polilínea abierta unida con Bresenham.
+        // No se rellena: puede tener cualquier forma (no necesariamente convexa).
         return rasterizarTrazo(figura.puntos);
     }
 
     return {};   // tipo desconocido: ninguna celda
 }
-
 
 // ============================================================================
 // CREAR UNA FIGURA nueva con el color que esté seleccionado en este momento.
@@ -354,6 +434,9 @@ void crearFigura(TipoFigura tipo, const std::vector<Cell>& puntos)
     // esta figura conserva el suyo.
     for (int i = 0; i < 3; i++)
         nueva.color[i] = colorActual[i];
+
+    // Se COPIA también la opción "Rellenar" del panel
+    nueva.relleno = rellenoActivo;
 
     figuras.push_back(nueva);
 }
@@ -632,6 +715,12 @@ void dibujarPanel()
     // ---------- Color ----------
     ImGui::SeparatorText("Color");
     ImGui::ColorEdit3("Color", colorActual);   // modifica colorActual directamente
+
+    // ---------- Relleno ----------
+    ImGui::SeparatorText("Relleno");
+    // Checkbox modifica directamente rellenoActivo (true/false)
+    ImGui::Checkbox("Rellenar figuras nuevas", &rellenoActivo);
+    ImGui::TextWrapped("Aplica a circulo, triangulo y cuadrado (scanline).");
 
     // ---------- Lienzo ----------
     ImGui::SeparatorText("Lienzo");
