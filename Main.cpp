@@ -684,7 +684,7 @@ const char* cellFragmentShaderSource =
 "    FragColor = vec4(vColor, 1.0);\n"   // alfa 1.0 = totalmente opaco
 "}\n";
 
-// MANEJADOR DE CLICS DEL MOUSE
+// FUNCIONES AUXILIARES: COMPILAR SHADERS Y CONVERTIR CELDAS EN TRIÁNGULOS
 
 // Compila UN shader (vertex o fragment). Si tiene errores de sintaxis GLSL,
 // los imprime en la consola en vez de fallar en silencio.
@@ -773,6 +773,7 @@ void agregarCelda(std::vector<float>& vertices, std::vector<unsigned int>& indic
     indices.push_back(base + 2); indices.push_back(base + 3); indices.push_back(base + 0);
 }
 
+// MANEJADOR DE CLICS DEL MOUSE
 
 void mouse_button_callback(
     GLFWwindow* window,
@@ -1047,7 +1048,7 @@ int main()
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Crea la ventana gráfica de 800x800 píxeles
-    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Linea y Circulo", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Paint con OpenGL", NULL, NULL);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
 
@@ -1072,21 +1073,8 @@ int main()
     // Debe coincidir con nuestro contexto OpenGL 3.3 Core (#version 330 de los shaders)
     ImGui_ImplOpenGL3_Init("#version 330");
 
-    // Compilación y enlace de los shaders en la GPU
-    unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-    glCompileShader(vertexShader);
-
-    unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-    glCompileShader(fragmentShader);
-
-    unsigned int shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
+    // Programa de la GRILLA (fondo de rayas): compilado con revisión de errores
+    unsigned int shaderProgram = crearProgramaShader(vertexShaderSource, fragmentShaderSource);
 
     // Programa para las celdas pintadas (usa la función con revisión de errores)
     unsigned int cellProgram = crearProgramaShader(cellVertexShaderSource, cellFragmentShaderSource);
@@ -1132,10 +1120,6 @@ int main()
 
     // Obtención de ubicaciones de variables uniformes para comunicarse con los shaders
     int cellSizeLocation = glGetUniformLocation(shaderProgram, "uCellSize");
-    int lineCountLocation = glGetUniformLocation(shaderProgram, "uLineCount");
-    int circleCountLocation = glGetUniformLocation(shaderProgram, "uCircleCount");
-    int linePointsLocation = glGetUniformLocation(shaderProgram, "uLinePoints[0]");
-    int circlePointsLocation = glGetUniformLocation(shaderProgram, "uCirclePoints[0]");
 
     // BUCLE PRINCIPAL DE RENDERIZADO
   
@@ -1230,5 +1214,3 @@ int main()
 
     return 0;
 }
-
-
