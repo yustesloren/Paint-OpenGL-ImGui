@@ -8,7 +8,7 @@ geométricas** con matrices 3×3 en coordenadas homogéneas.
 | | |
 |---|---|
 | **Integrante** | Lorena Patricia Yustes Cifuentes |
-| **Código** | 60144 |
+| **Código** | 6014420 |
 | **Curso** | Introducción a la Computación |
 | **Profesor** | Fernando Javier Nossa Chaparro |
 
@@ -48,14 +48,14 @@ geométricas** con matrices 3×3 en coordenadas homogéneas.
 
 ## Demostración
 
-Video explicativo con demostración del software: *(agregar enlace al video)*
+Video explicativo con demostración del software: *(https://youtu.be/JZOQlghxo88)*
 
 ---
 
 ## Arquitectura del software
 
 ### Organización general
-Todo el programa está en `Main.cpp` y sigue los **6 momentos de un programa OpenGL**
+Todo el programa está en `Main.cpp` y sigue los **6 momentos de un programa en OpenGL**
 vistos en el curso:
 
 | Momento | Qué se hace | Dónde |
