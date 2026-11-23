@@ -48,7 +48,7 @@ geométricas** con matrices 3×3 en coordenadas homogéneas.
 
 ## Demostración
 
-Video explicativo con demostración del software: *(https://youtu.be/JZOQlghxo88)*
+Video explicativo con demostración del software: *(https://youtu.be/2J5vvtKTrfU?si=lwYbG6qWLFiIR--T)*
 
 ---
 
